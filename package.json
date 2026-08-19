@@ -6,7 +6,7 @@
   "scripts": {
     "dev:server": "tsx watch src/server/app.ts",
     "dev:client": "vite",
-    "dev": "concurrently -k -n SERVER,CLIENT -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev": "concurrently -k --kill-others-on-fail -n SERVER,CLIENT -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "build:client": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
     "build": "npm run prisma:generate && npm run build:client && npm run build:server",

@@ -126,15 +126,34 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": {
-        target: "http://localhost:3000",
+        target: "http://127.0.0.1:3000",
         changeOrigin: true,
+        // Don't crash Vite if backend is briefly unreachable (e.g. during tsx watch restart)
+        configure: (proxy) => {
+          proxy.on("error", (err, req, res) => {
+            // Only log once per minute to avoid spam
+            const now = Date.now();
+            if (!(globalThis as any)._lastProxyErrLog || now - (globalThis as any)._lastProxyErrLog > 60000) {
+              (globalThis as any)._lastProxyErrLog = now;
+              console.error("[VITE PROXY ERROR]", err.message);
+              console.error("[VITE PROXY ERROR] Is the backend running on port 3000? Try: npm run dev:server");
+            }
+            if (res && !res.headersSent && typeof res.writeHead === "function") {
+              res.writeHead(502, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({
+                code: "BACKEND_UNAVAILABLE",
+                message: "Backend is not running on port 3000. Please start it with 'npm run dev:server'.",
+              }));
+            }
+          });
+        },
       },
       "/ws": {
-        target: "ws://localhost:3000",
+        target: "ws://127.0.0.1:3000",
         ws: true,
       },
       "/uploads": {
-        target: "http://localhost:3000",
+        target: "http://127.0.0.1:3000",
         changeOrigin: true,
       },
     },

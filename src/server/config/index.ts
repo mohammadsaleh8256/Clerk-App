@@ -115,7 +115,24 @@ function ensureDir(dir: string): string {
 
 export const config = {
   port: parseInt(process.env.PORT || "3000", 10),
-  host: process.env.HOST || "0.0.0.0",
+  // Default to 0.0.0.0 so the server is reachable on all network interfaces
+  // (loopback 127.0.0.1, LAN IP, etc.). This is critical because:
+  //   - Vite dev proxy connects to http://localhost:3000 (which is 127.0.0.1)
+  //   - TV clients connect via the laptop's LAN IP (e.g. http://192.168.1.50:3000)
+  //   - If HOST is set to a specific IP (e.g. 192.168.1.109), the server only
+  //     listens on that interface and 127.0.0.1 will be refused (ECONNREFUSED).
+  //   - Setting HOST=0.0.0.0 makes the server listen on ALL interfaces.
+  // If the user set HOST to a specific IP in .env, we OVERRIDE it to 0.0.0.0
+  // and log a warning, because a specific IP breaks the Vite dev proxy.
+  host: (() => {
+    const envHost = process.env.HOST;
+    if (envHost && envHost !== "0.0.0.0" && envHost !== "localhost" && envHost !== "127.0.0.1") {
+      // eslint-disable-next-line no-console
+      console.log(`[WARN] HOST='${envHost}' in .env — overriding to '0.0.0.0' to ensure Vite dev proxy works correctly.`);
+      return "0.0.0.0";
+    }
+    return "0.0.0.0";
+  })(),
   nodeEnv: process.env.NODE_ENV || "development",
   databaseUrl: resolvedDatabaseUrl,
   maxAudioSize: parseInt(process.env.MAX_AUDIO_SIZE || "10485760", 10),
