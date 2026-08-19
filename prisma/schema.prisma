@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Person {
+  id        Int      @id @default(autoincrement())
+  number    Int      @unique
+  name      String
+  audioFile String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  queueItems  QueueItem[]
+  callHistory CallHistory[]
+
+  @@index([active])
+  @@index([number])
+}
+
+model QueueItem {
+  id          Int       @id @default(autoincrement())
+  personId    Int
+  number      Int
+  name        String
+  audioFile   String?
+  status      String    @default("WAITING") // WAITING | PLAYING | COMPLETED | CANCELLED | FAILED
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  displayId   String?
+
+  person  Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  display Display? @relation(fields: [displayId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Display {
+  id         String   @id
+  name       String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  queueItems QueueItem[]
+}
+
+model CallHistory {
+  id          Int       @id @default(autoincrement())
+  personId    Int
+  number      Int
+  name        String
+  audioFile   String?
+  status      String // COMPLETED | CANCELLED | FAILED
+  calledAt    DateTime  @default(now())
+  completedAt DateTime?
+  displayId   String?
+
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@index([calledAt])
+  @@index([personId])
+}
