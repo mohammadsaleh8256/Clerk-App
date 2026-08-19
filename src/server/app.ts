@@ -22,45 +22,115 @@ import { AppError } from "./utils/errors.js";
  * Checks if the database schema is initialized (i.e. the Person table exists).
  * If not, runs `prisma db push` automatically to create tables.
  *
- * This handles two cases:
+ * This handles several scenarios:
  * 1. Fresh project — db/custom.db doesn't exist yet, or exists but is empty.
  * 2. Recovered from git — user cloned the repo but forgot to run `npm run db:setup`.
+ * 3. Corrupted database — file exists but is malformed or missing tables.
  *
  * Without this, the server would crash on the first query because Prisma
  * can run raw SQL but tables aren't there.
  */
 async function ensureDatabaseSchema(): Promise<void> {
-  try {
-    // Try to query a single Person row to check if the table exists.
-    await prisma.person.findFirst({ select: { id: true }, take: 1 });
-    logger.info("Database schema OK");
-    return;
-  } catch (e: any) {
-    // P2021: "The table `main.Person` does not exist in the current database"
-    // P1: SQLite generic error (table doesn't exist)
-    if (e?.code === "P2021" || /does not exist/i.test(e?.message || "")) {
-      logger.warn("Database schema missing — running prisma db push to create tables...");
-      try {
-        // Run prisma db push to create tables.
-        // We use execSync because Prisma's programmatic API for migrations
-        // is complex and the CLI is reliable.
-        execSync("npx prisma db push --skip-generate --accept-data-loss", {
-          stdio: "inherit",
-          cwd: config.projectRoot,
-          env: { ...process.env, DATABASE_URL: config.databaseUrl },
+  // Try up to 3 times:
+  //   attempt 1: quick check + db push if missing
+  //   attempt 2: if still broken AND file looks corrupted, delete it and re-push
+  //   attempt 3: final retry
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      // Try to query a single Person row to check if the table exists.
+      await prisma.person.findFirst({ select: { id: true }, take: 1 });
+      if (attempt === 1) {
+        logger.info("Database schema OK");
+      } else {
+        logger.info("Database schema OK after recovery");
+      }
+      return;
+    } catch (e: any) {
+      const errCode = e?.code || "";
+      const errMsg = e?.message || "";
+      const isMissingTable = errCode === "P2021" || /does not exist/i.test(errMsg);
+      // SQLite error 26 = "file is not a database" (corrupted file)
+      // SQLite error 14 = "unable to open database file"
+      const isCorrupted = /file is not a database|not a database|extended_code: 26/i.test(errMsg);
+
+      if (!isMissingTable && attempt === 1) {
+        // Some other error on first attempt — log it but try the push anyway
+        logger.warn("Unexpected database error during schema check", {
+          code: errCode,
+          message: errMsg.slice(0, 200),
         });
-        logger.info("Database schema created successfully");
-      } catch (pushErr) {
-        logger.error("Failed to create database schema", {
-          error: (pushErr as Error).message,
+      }
+
+      if (attempt < 3) {
+        // If the database file looks corrupted, delete it before retrying.
+        // (prisma db push can't repair a non-SQLite file.)
+        if (isCorrupted) {
+          const dbPath = config.databaseUrl.replace(/^file:/, "");
+          logger.warn(`Database file appears corrupted — deleting and recreating: ${dbPath}`);
+          try {
+            await prisma.$disconnect();
+          } catch {
+            // ignore
+          }
+          try {
+            if (fs.existsSync(dbPath)) {
+              fs.unlinkSync(dbPath);
+            }
+            // Also delete the -journal and -wal files if they exist
+            for (const ext of ["-journal", "-wal", "-shm"]) {
+              if (fs.existsSync(dbPath + ext)) {
+                fs.unlinkSync(dbPath + ext);
+              }
+            }
+          } catch (delErr) {
+            logger.error("Failed to delete corrupted database file", {
+              error: (delErr as Error).message,
+            });
+          }
+          try {
+            await prisma.$connect();
+          } catch {
+            // ignore — will reconnect after push
+          }
+        }
+
+        logger.warn(`Database schema issue (attempt ${attempt}/3) — running prisma db push...`, {
+          code: errCode,
         });
+        try {
+          // Run prisma db push to create tables.
+          execSync("npx prisma db push --skip-generate --accept-data-loss", {
+            stdio: "pipe",  // capture output to log it
+            cwd: config.projectRoot,
+            env: { ...process.env, DATABASE_URL: config.databaseUrl },
+          });
+          logger.info("prisma db push completed — retrying schema check");
+          // Disconnect and reconnect to refresh Prisma's connection
+          await prisma.$disconnect();
+          await prisma.$connect();
+        } catch (pushErr: any) {
+          logger.error("prisma db push failed", {
+            error: pushErr.message,
+            stdout: pushErr.stdout?.toString?.() || "",
+            stderr: pushErr.stderr?.toString?.() || "",
+          });
+          // On last attempt, throw a meaningful error
+          if (attempt === 3) {
+            throw new Error(
+              `Database schema could not be created (attempt ${attempt}/3). ` +
+              `Please run 'npm run db:setup' manually. ` +
+              `Error: ${pushErr.message}`,
+            );
+          }
+        }
+      } else {
+        // Final attempt failed
         throw new Error(
-          "Database schema could not be created. Please run `npm run db:setup` manually.",
+          `Database schema check failed after 3 attempts. ` +
+          `Last error: ${errMsg.slice(0, 200)}. ` +
+          `Please delete the db/ folder and run 'npm run db:setup' again.`,
         );
       }
-    } else {
-      // Some other error — rethrow
-      throw e;
     }
   }
 }
@@ -152,6 +222,28 @@ async function bootstrap() {
     });
 
     api.get("/api/health", async () => ({ ok: true, ts: Date.now() }));
+  });
+
+  // 9b. Global error handler — catches any unhandled errors from routes and
+  // returns a structured 500 response with the error message. Without this,
+  // Fastify returns a generic 500 with no body, which makes debugging very hard.
+  app.setErrorHandler((error, req, reply) => {
+    const url = req.url;
+    const method = req.method;
+    logger.error("Unhandled route error", {
+      method,
+      url,
+      error: error.message,
+      stack: error.stack,
+    });
+    // Don't leak internal stack traces to the client in production
+    const isDev = config.nodeEnv !== "production";
+    reply.code(error.statusCode || 500);
+    return {
+      code: "INTERNAL_ERROR",
+      message: error.message || "خطای داخلی سرور",
+      ...(isDev ? { stack: error.stack, url, method } : {}),
+    };
   });
 
   // 10. Serve built client (admin + display)

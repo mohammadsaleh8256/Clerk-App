@@ -2,18 +2,26 @@ import type { FastifyInstance } from "fastify";
 import { personService } from "../services/personService.js";
 import { AppError, toErrorResponse } from "../utils/errors.js";
 import { config } from "../config/index.js";
+import { logger } from "../utils/logger.js";
 
 export async function peopleRoutes(app: FastifyInstance) {
   // GET /api/people?includeInactive=true
-  app.get("/api/people", async (req) => {
-    const includeInactive = (req.query as { includeInactive?: string }).includeInactive === "true";
-    return await personService.list(includeInactive);
+  app.get("/api/people", async (req, reply) => {
+    try {
+      const includeInactive = (req.query as { includeInactive?: string }).includeInactive === "true";
+      return await personService.list(includeInactive);
+    } catch (e) {
+      logger.error("GET /api/people failed", { error: (e as Error).message, stack: (e as Error).stack });
+      const err = toErrorResponse(e);
+      reply.code(500);
+      return err;
+    }
   });
 
   // POST /api/people
   app.post("/api/people", async (req, reply) => {
     try {
-      const body = req.body as { number?: number; name?: string; active?: boolean };
+      const body = (req.body || {}) as { number?: number; name?: string; active?: boolean };
       const person = await personService.create({
         number: body.number as number,
         name: body.name as string,
@@ -22,33 +30,50 @@ export async function peopleRoutes(app: FastifyInstance) {
       reply.code(201);
       return person;
     } catch (e) {
+      logger.error("POST /api/people failed", { error: (e as Error).message });
       const err = toErrorResponse(e);
-      reply.code(err.code === "NOT_FOUND" ? 404 : err.code === "DUPLICATE_NUMBER" ? 409 : 400);
+      reply.code(
+        err.code === "NOT_FOUND" ? 404 :
+        err.code === "DUPLICATE_NUMBER" ? 409 :
+        400,
+      );
       return err;
     }
   });
 
   // GET /api/people/:id
   app.get("/api/people/:id", async (req, reply) => {
-    const id = parseInt((req.params as { id: string }).id, 10);
-    const person = await personService.get(id);
-    if (!person) {
-      reply.code(404);
-      return { code: "NOT_FOUND", message: "شخص پیدا نشد" };
+    try {
+      const id = parseInt((req.params as { id: string }).id, 10);
+      const person = await personService.get(id);
+      if (!person) {
+        reply.code(404);
+        return { code: "NOT_FOUND", message: "شخص پیدا نشد" };
+      }
+      return person;
+    } catch (e) {
+      logger.error("GET /api/people/:id failed", { error: (e as Error).message });
+      const err = toErrorResponse(e);
+      reply.code(500);
+      return err;
     }
-    return person;
   });
 
   // PUT /api/people/:id
   app.put("/api/people/:id", async (req, reply) => {
     try {
       const id = parseInt((req.params as { id: string }).id, 10);
-      const body = req.body as { number?: number; name?: string; active?: boolean };
+      const body = (req.body || {}) as { number?: number; name?: string; active?: boolean };
       const person = await personService.update(id, body);
       return person;
     } catch (e) {
+      logger.error("PUT /api/people/:id failed", { error: (e as Error).message });
       const err = toErrorResponse(e);
-      reply.code(err.code === "NOT_FOUND" ? 404 : err.code === "DUPLICATE_NUMBER" ? 409 : 400);
+      reply.code(
+        err.code === "NOT_FOUND" ? 404 :
+        err.code === "DUPLICATE_NUMBER" ? 409 :
+        400,
+      );
       return err;
     }
   });
@@ -61,6 +86,7 @@ export async function peopleRoutes(app: FastifyInstance) {
       reply.code(204);
       return null;
     } catch (e) {
+      logger.error("DELETE /api/people/:id failed", { error: (e as Error).message });
       const err = toErrorResponse(e);
       reply.code(err.code === "NOT_FOUND" ? 404 : 400);
       return err;
@@ -97,8 +123,14 @@ export async function peopleRoutes(app: FastifyInstance) {
       });
       return person;
     } catch (e) {
+      logger.error("POST /api/people/:id/audio failed", { error: (e as Error).message });
       const err = toErrorResponse(e);
-      reply.code(err.code === "NOT_FOUND" ? 404 : err.code === "FILE_TOO_LARGE" ? 413 : err.code === "INVALID_FILE_TYPE" ? 415 : 400);
+      reply.code(
+        err.code === "NOT_FOUND" ? 404 :
+        err.code === "FILE_TOO_LARGE" ? 413 :
+        err.code === "INVALID_FILE_TYPE" ? 415 :
+        400,
+      );
       return err;
     }
   });
@@ -110,6 +142,7 @@ export async function peopleRoutes(app: FastifyInstance) {
       const person = await personService.deleteAudio(id);
       return person;
     } catch (e) {
+      logger.error("DELETE /api/people/:id/audio failed", { error: (e as Error).message });
       const err = toErrorResponse(e);
       reply.code(err.code === "NOT_FOUND" ? 404 : 400);
       return err;
