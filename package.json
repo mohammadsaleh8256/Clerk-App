@@ -13,8 +13,8 @@
     "start": "node dist/server/server/app.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
-    "prisma:push": "prisma db push",
-    "db:setup": "prisma generate && prisma db push",
+    "prisma:push": "node scripts/setup-db.mjs",
+    "db:setup": "node scripts/setup-db.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.server.json && tsc --noEmit -p tsconfig.client.json",
     "test": "vitest run"
   },
