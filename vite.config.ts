@@ -53,6 +53,10 @@ function flattenHtmlPlugin() {
 //   1. Rewrites "/admin" → "/src/client/admin/index.html"
 //   2. Rewrites "/display" → "/src/client/display/index.html"
 //   3. Redirects "/" → "/admin" (no root HTML exists in dev)
+//   4. Rewrites "/main.tsx" → "/src/client/admin/main.tsx"
+//      (legacy fallback for browsers with cached old HTML that
+//       still references "./main.tsx" — this prevents the 404)
+//   5. Rewrites "/App.tsx" → "/src/client/admin/App.tsx" (same reason)
 //
 // Query strings are preserved. Static asset requests (/assets/*, /@vite/*,
 // /@fs/*, /src/*, etc.) are NOT rewritten.
@@ -79,7 +83,6 @@ function devUrlRewritePlugin() {
         // 2. /admin (optionally with trailing slash) → admin entry HTML
         if (pathname === "/admin" || pathname === "/admin/") {
           req.url = "/src/client/admin/index.html" + query;
-          // Continue to Vite's static file middleware
         }
         // 3. /display (optionally with trailing slash) → display entry HTML
         else if (pathname === "/display" || pathname === "/display/") {
@@ -91,6 +94,16 @@ function devUrlRewritePlugin() {
         }
         else if (pathname === "/display/index.html") {
           req.url = "/src/client/display/index.html" + query;
+        }
+        // 5. Legacy fallback: browsers with cached old HTML may still request
+        //    "/main.tsx" or "/App.tsx" (the old relative-path references).
+        //    Route these to the admin entry so the page doesn't go white.
+        //    The user can hard-refresh to get the new HTML.
+        else if (pathname === "/main.tsx") {
+          req.url = "/src/client/admin/main.tsx" + query;
+        }
+        else if (pathname === "/App.tsx") {
+          req.url = "/src/client/admin/App.tsx" + query;
         }
 
         next();
