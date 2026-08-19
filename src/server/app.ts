@@ -4,6 +4,7 @@ import fastifyStatic from "@fastify/static";
 import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
+import { execSync } from "node:child_process";
 import { config } from "./config/index.js";
 import { logger } from "./utils/logger.js";
 import { prisma } from "./services/prisma.js";
@@ -17,10 +18,60 @@ import { historyRoutes } from "./routes/history.js";
 import { resolveAudioPath } from "./storage/audioStorage.js";
 import { AppError } from "./utils/errors.js";
 
+/**
+ * Checks if the database schema is initialized (i.e. the Person table exists).
+ * If not, runs `prisma db push` automatically to create tables.
+ *
+ * This handles two cases:
+ * 1. Fresh project — db/custom.db doesn't exist yet, or exists but is empty.
+ * 2. Recovered from git — user cloned the repo but forgot to run `npm run db:setup`.
+ *
+ * Without this, the server would crash on the first query because Prisma
+ * can run raw SQL but tables aren't there.
+ */
+async function ensureDatabaseSchema(): Promise<void> {
+  try {
+    // Try to query a single Person row to check if the table exists.
+    await prisma.person.findFirst({ select: { id: true }, take: 1 });
+    logger.info("Database schema OK");
+    return;
+  } catch (e: any) {
+    // P2021: "The table `main.Person` does not exist in the current database"
+    // P1: SQLite generic error (table doesn't exist)
+    if (e?.code === "P2021" || /does not exist/i.test(e?.message || "")) {
+      logger.warn("Database schema missing — running prisma db push to create tables...");
+      try {
+        // Run prisma db push to create tables.
+        // We use execSync because Prisma's programmatic API for migrations
+        // is complex and the CLI is reliable.
+        execSync("npx prisma db push --skip-generate --accept-data-loss", {
+          stdio: "inherit",
+          cwd: config.projectRoot,
+          env: { ...process.env, DATABASE_URL: config.databaseUrl },
+        });
+        logger.info("Database schema created successfully");
+      } catch (pushErr) {
+        logger.error("Failed to create database schema", {
+          error: (pushErr as Error).message,
+        });
+        throw new Error(
+          "Database schema could not be created. Please run `npm run db:setup` manually.",
+        );
+      }
+    } else {
+      // Some other error — rethrow
+      throw e;
+    }
+  }
+}
+
 async function bootstrap() {
   // 1. Database
   await prisma.$connect();
   logger.info("Database connected", { url: config.databaseUrl });
+
+  // 1b. Ensure schema exists (auto-create tables if missing)
+  await ensureDatabaseSchema();
 
   // 2. Recover queue state on startup
   await queueService.recoverOnStartup();
